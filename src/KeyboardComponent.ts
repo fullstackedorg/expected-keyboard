@@ -34,7 +34,6 @@ export class ExpectedKeyboard {
   private lastShiftTapTime = 0;
   private lastCtrlTapTime = 0;
   private lastAltTapTime = 0;
-  private lastHideTimestamp = 0;
 
   // Attached Target Input / Textarea
   private activeTarget: HTMLInputElement | HTMLTextAreaElement | HTMLElement | null = null;
@@ -228,9 +227,6 @@ export class ExpectedKeyboard {
         }
 
         this.handleNavAction(action);
-        if (this.options.onAction) {
-          this.options.onAction(action);
-        }
       };
 
       btn.addEventListener("mousedown", (e) => {
@@ -256,7 +252,7 @@ export class ExpectedKeyboard {
     if (action === "esc") {
       this.executeEscAction();
     } else if (action === "tab") {
-      this.insertText("  ");
+      this.executeTabAction();
     } else if (action === "left") {
       this.moveCursor(-1, this.shiftState !== "OFF");
     } else if (action === "right") {
@@ -308,7 +304,6 @@ export class ExpectedKeyboard {
   }
 
   public hide() {
-    this.lastHideTimestamp = Date.now();
     this.isVisibleState = false;
     this.keyboardRoot.style.transform = "translateY(100%)";
     this.keyboardRoot.style.opacity = "0";
@@ -398,7 +393,14 @@ export class ExpectedKeyboard {
       return true;
     }
     if (target.getAttribute("contenteditable") === "true" || target.isContentEditable) return true;
-    if (target.id === "terminal-view" || target.classList.contains("terminal-container")) return true;
+    if (
+      target.id === "terminal-view" ||
+      target.classList.contains("terminal-container") ||
+      target.classList.contains("xterm") ||
+      Boolean(target.closest && target.closest(".xterm"))
+    ) {
+      return true;
+    }
     return false;
   }
 
@@ -430,6 +432,25 @@ export class ExpectedKeyboard {
     if (!this.isEligibleTarget(element) && element.id !== "terminal-view") return;
     if (this.attachedElements.has(element)) return;
     this.attachedElements.add(element);
+
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element.isContentEditable
+    ) {
+      element.setAttribute("inputmode", "none");
+      try {
+        (element as any).inputMode = "none";
+      } catch {}
+      element.setAttribute("virtualkeyboardpolicy", "manual");
+      try {
+        (element as any).virtualKeyboardPolicy = "manual";
+      } catch {}
+      element.setAttribute("autocomplete", "off");
+      element.setAttribute("autocorrect", "off");
+      element.setAttribute("autocapitalize", "off");
+      element.setAttribute("spellcheck", "false");
+    }
 
     const onFocus = () => {
       this.activeTarget = element;
@@ -1120,7 +1141,7 @@ export class ExpectedKeyboard {
       targetValue === "⇥" ||
       targetValue === "Tab"
     ) {
-      this.insertText("  ");
+      this.executeTabAction();
       return;
     }
 
@@ -1165,8 +1186,67 @@ export class ExpectedKeyboard {
   }
 
   private executeEscAction() {
+    const target = this.getTargetElement();
+    const isXterm = target && target.classList.contains("xterm-helper-textarea");
+
+    if (isXterm) {
+      if (this.options.onAction) {
+        this.options.onAction("esc");
+      }
+      return;
+    }
+
+    if (target) {
+      const escEvent = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        keyCode: 27,
+        which: 27,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(escEvent);
+    }
+
     if (this.options.onAction) {
       this.options.onAction("esc");
+    }
+  }
+
+  private executeTabAction() {
+    const target = this.getTargetElement();
+    const isXterm = target && target.classList.contains("xterm-helper-textarea");
+
+    if (isXterm) {
+      if (this.options.onAction) {
+        this.options.onAction("tab");
+      }
+      return;
+    }
+
+    let defaultPrevented = false;
+    if (target) {
+      const tabEvent = new KeyboardEvent("keydown", {
+        key: "Tab",
+        code: "Tab",
+        keyCode: 9,
+        which: 9,
+        bubbles: true,
+        cancelable: true,
+        shiftKey: this.shiftState !== "OFF",
+        ctrlKey: this.ctrlState !== "OFF",
+        altKey: this.altState !== "OFF",
+      });
+      const notCancelled = target.dispatchEvent(tabEvent);
+      if (!notCancelled) {
+        defaultPrevented = true;
+      }
+    }
+
+    if (this.options.onAction) {
+      this.options.onAction("tab");
+    } else if (!defaultPrevented && target && "value" in target) {
+      this.insertText("\t");
     }
   }
 
@@ -1206,13 +1286,16 @@ export class ExpectedKeyboard {
     if (lower === "c") {
       const target = this.getTargetElement();
       let textToCopy = "";
-      if (target && "value" in target) {
+      if (target && "value" in target && !target.classList.contains("xterm-helper-textarea")) {
         const start = target.selectionStart ?? 0;
         const end = target.selectionEnd ?? 0;
         textToCopy = start !== end ? target.value.slice(start, end) : target.value;
       }
       if (navigator.clipboard && textToCopy) {
         navigator.clipboard.writeText(textToCopy);
+      }
+      if (this.options.onAction) {
+        this.options.onAction("ctrl+c");
       }
       if (this.ctrlState === "LATCHED") this.ctrlState = "OFF";
       this.updateKeyboardVisuals();
@@ -1259,33 +1342,37 @@ export class ExpectedKeyboard {
         target.focus({ preventScroll: true });
       } catch {}
 
-      const val = target.value ?? "";
-      let start = target.selectionStart;
-      let end = target.selectionEnd;
+      if (target.classList.contains("xterm-helper-textarea")) {
+        target.value = "";
+      } else {
+        const val = target.value ?? "";
+        let start = target.selectionStart;
+        let end = target.selectionEnd;
 
-      if (start === null || start === undefined || start < 0) start = val.length;
-      if (end === null || end === undefined || end < 0) end = val.length;
+        if (start === null || start === undefined || start < 0) start = val.length;
+        if (end === null || end === undefined || end < 0) end = val.length;
 
-      let inserted = false;
-      if (typeof target.setRangeText === "function") {
-        try {
-          target.setRangeText(text, start, end, "end");
-          inserted = true;
-        } catch {}
-      }
-
-      if (!inserted) {
-        target.value = val.slice(0, start) + text + val.slice(end);
-        const newPos = start + text.length;
-        if (typeof target.setSelectionRange === "function") {
+        let inserted = false;
+        if (typeof target.setRangeText === "function") {
           try {
-            target.setSelectionRange(newPos, newPos);
+            target.setRangeText(text, start, end, "end");
+            inserted = true;
           } catch {}
         }
-      }
 
-      target.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-      target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        if (!inserted) {
+          target.value = val.slice(0, start) + text + val.slice(end);
+          const newPos = start + text.length;
+          if (typeof target.setSelectionRange === "function") {
+            try {
+              target.setSelectionRange(newPos, newPos);
+            } catch {}
+          }
+        }
+
+        target.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      }
     }
 
     if (this.shiftState === "LATCHED") this.shiftState = "OFF";
@@ -1311,6 +1398,14 @@ export class ExpectedKeyboard {
     try {
       target.focus({ preventScroll: true });
     } catch {}
+
+    if (target.classList.contains("xterm-helper-textarea")) {
+      target.value = "";
+      if (this.options.onAction) {
+        this.options.onAction("backspace");
+      }
+      return;
+    }
 
     const val = target.value ?? "";
     let start = target.selectionStart;
@@ -1366,8 +1461,13 @@ export class ExpectedKeyboard {
   }
 
   public moveCursor(delta: number, expandSelection = false) {
+    if (this.options.onAction) {
+      this.options.onAction(delta > 0 ? "right" : "left");
+    }
+
     const target = this.getTargetElement();
     if (!target || !("value" in target) || typeof target.setSelectionRange !== "function") return;
+    if (target.classList.contains("xterm-helper-textarea")) return;
 
     target.focus();
     const start = target.selectionStart ?? 0;
@@ -1385,8 +1485,13 @@ export class ExpectedKeyboard {
   }
 
   public moveCursorVertical(lines: number) {
+    if (this.options.onAction) {
+      this.options.onAction(lines > 0 ? "down" : "up");
+    }
+
     const target = this.getTargetElement();
     if (!target || !("value" in target) || typeof target.setSelectionRange !== "function") return;
+    if (target.classList.contains("xterm-helper-textarea")) return;
 
     const val = target.value;
     const pos = target.selectionStart ?? 0;
@@ -1411,8 +1516,13 @@ export class ExpectedKeyboard {
   }
 
   public moveCursorToBoundary(boundary: "home" | "end") {
+    if (this.options.onAction) {
+      this.options.onAction(boundary);
+    }
+
     const target = this.getTargetElement();
     if (!target || !("value" in target) || typeof target.setSelectionRange !== "function") return;
+    if (target.classList.contains("xterm-helper-textarea")) return;
 
     const val = target.value;
     const pos = target.selectionStart ?? 0;

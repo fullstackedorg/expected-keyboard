@@ -3,6 +3,8 @@ import {
   LAYOUT_QWERTY,
 } from "./src";
 
+export * from "./src";
+
 function initDemoApp() {
   // Mobile Touch Viewport Setup
   let metaViewport = document.querySelector('meta[name="viewport"]') as HTMLMetaElement;
