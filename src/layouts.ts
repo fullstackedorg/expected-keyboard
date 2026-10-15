@@ -1,4 +1,4 @@
-import { KeyboardLayout, KeyboardRow } from "./types";
+import { KeyboardLayout } from "./types";
 
 export const LAYOUT_QWERTY: KeyboardLayout = [
     // Row 1 (10 keys)
